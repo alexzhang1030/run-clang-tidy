@@ -1,4 +1,4 @@
-use std::{fs, path};
+use std::{collections::HashSet, fs, path};
 
 #[allow(unused_imports)]
 use color_eyre::{eyre::eyre, eyre::WrapErr, Help};
@@ -208,12 +208,37 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
         globs::build_glob_set_from(&data.json.filter_post, "postFilter", &data.json.name)?;
 
     let (paths, filtered) = globs::match_paths(candidates, filter_pre, filter_post);
-    let paths = paths.into_iter().map(|p| p.canonicalize().unwrap());
+    let paths: Vec<_> = paths
+        .into_iter()
+        .map(|p| p.canonicalize().unwrap())
+        .collect();
 
-    let filtered = if filtered.is_empty() {
+    let (paths, filtered_by_git) = match &data.git_between {
+        Some(range) => {
+            let changed = resolve::git_between_paths(&data, range)?;
+            let changed: HashSet<_> = changed.into_iter().collect();
+            let before = paths.len();
+            let selected: Vec<_> = paths
+                .into_iter()
+                .filter(|path| changed.contains(path))
+                .collect();
+            let filtered_by_git = before.saturating_sub(selected.len());
+            log::info!(
+                "Restricting analysis to git range {} ({} configured files matched, {} skipped)",
+                console::style(range).bold(),
+                console::style(selected.len()).bold(),
+                console::style(filtered_by_git).bold(),
+            );
+            (selected, filtered_by_git)
+        }
+        None => (paths, 0),
+    };
+
+    let filtered = filtered.len() + filtered_by_git;
+    let filtered = if filtered == 0 {
         "".to_string()
     } else {
-        format!(" (filtered {} paths)", filtered.len())
+        format!(" (filtered {} paths)", filtered)
     };
 
     log::info!(
@@ -254,7 +279,6 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
         }
     });
 
-    let paths: Vec<_> = paths.collect();
     let ctcache = ctcache::Context::new(
         !data.force,
         &build_root,

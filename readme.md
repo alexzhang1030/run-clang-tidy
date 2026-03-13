@@ -41,6 +41,7 @@ Execute `run-clang-tidy --help` for more details, or `run-clang-tidy schema` for
   - [Speeding up the execution](#speeding-up-the-execution)
   - [Specifying an alternative tidy file and command](#specifying-an-alternative-tidy-file-and-command)
   - [Specifying an alternative build root](#specifying-an-alternative-build-root)
+  - [Restricting analysis to a git diff](#restricting-analysis-to-a-git-diff)
   - [How It Works: Built-in ctcache](#how-it-works-built-in-ctcache)
   - [Exporting SARIF](#exporting-sarif)
   - [Suppressing warnings](#suppressing-warnings)
@@ -303,6 +304,25 @@ The command-line options `--tidy` and `--command` allow specifying a `.clang-tid
 The [build root](#the-build-root-and-compile_commandsjson) containing the compilation database is typically not fixed; each build might use a different output folder and tools may be installed in different directories (e.g., if executed as part of a CI chain).
 
 Therefore the command-line option `--build-root` allows to specify the build directory when invoking this script, overriding, e.g., a default directory specified in the configuration `.json` file.
+
+## Restricting analysis to a git diff
+
+To analyze only the files changed between two revisions, use `--between`:
+
+```bash
+$ run-clang-tidy path/to/tidy.json --between main...HEAD
+```
+
+This mode still loads the JSON configuration and applies the usual `buildRoot`, `tidyFile`, `filterPre`, and `filterPost` settings. The git range is used only as an additional restriction on the final file list.
+
+Internally, the tool:
+
+* resolves the configured `paths`,
+* applies `filterPre` and `filterPost`,
+* resolves `git diff --name-only --diff-filter=ACMR <BASE>...<HEAD>`,
+* and analyzes only files that exist in both sets.
+
+This keeps unrelated diff entries such as deleted files or non-source files out of `clang-tidy`, while still honoring the project configuration.
 
 ## How It Works: Built-in ctcache
 

@@ -1,4 +1,4 @@
-use std::path;
+use std::{fs, path, process};
 
 use crate::cli::{self, utils};
 
@@ -205,9 +205,81 @@ pub fn command(data: &cli::Data) -> eyre::Result<path::PathBuf> {
     Ok(cmd)
 }
 
+pub fn git_between_paths(data: &cli::Data, range: &str) -> eyre::Result<Vec<path::PathBuf>> {
+    let repo_root = git_repo_root(data.json.root.as_path())?;
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root.as_path())
+        .arg("diff")
+        .arg("--name-only")
+        .arg("--diff-filter=ACMR")
+        .arg(range)
+        .output()
+        .wrap_err("Failed to execute git diff for option '--between'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            format!("git diff returned status {}", output.status)
+        } else {
+            stderr
+        };
+        return Err(eyre!("Failed to resolve files for git range '{range}': {message}"))
+            .suggestion("Please make sure both revisions exist and the current workspace is inside a git repository");
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let path = repo_root.join(line);
+            fs::canonicalize(&path).wrap_err(format!(
+                "Failed to resolve changed file '{}' from git range '{}'",
+                path.to_string_lossy(),
+                range
+            ))
+        })
+        .collect()
+}
+
+fn git_repo_root(start: &path::Path) -> eyre::Result<path::PathBuf> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(start)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .wrap_err("Failed to execute git rev-parse")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            format!("git rev-parse returned status {}", output.status)
+        } else {
+            stderr
+        };
+        return Err(eyre!(
+            "Failed to determine the git repository root from '{}': {message}",
+            start.to_string_lossy()
+        ))
+        .suggestion("Please run this command inside a git workspace when using '--between'");
+    }
+
+    Ok(path::PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::git_repo_root;
 
     #[test]
     #[cfg(not(windows))]
@@ -277,5 +349,18 @@ mod tests {
         }
 
         test_paths(&tests);
+    }
+
+    #[test]
+    fn git_repo_root_requires_repository() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!("run-clang-tidy-no-git-{suffix}"));
+        fs::create_dir_all(&temp).unwrap();
+        let result = git_repo_root(&temp);
+        fs::remove_dir_all(&temp).unwrap();
+        assert!(result.is_err());
     }
 }

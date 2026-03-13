@@ -72,6 +72,8 @@ pub struct Data {
     pub jobs: Option<u8>,
     /// Optional output path for a combined SARIF report.
     pub sarif_output: Option<path::PathBuf>,
+    /// Optional git diff range used to restrict the analyzed files.
+    pub git_between: Option<String>,
     /// Force a fresh clang-tidy execution and bypass the built-in ctcache.
     pub force: bool,
     /// Command-line option to suppress warnings issued by clang-tidy.
@@ -150,6 +152,13 @@ impl Builder {
                     .action(clap::ArgAction::Set)
                     .required(false),
             )
+            .arg(
+                Arg::new("between")
+                    .long("between")
+                    .value_name("RANGE")
+                    .help("Restrict analysis to files changed in a git diff range, e.g. main...HEAD")
+                    .action(clap::ArgAction::Set),
+            )
             .arg(arg!(-v --verbose ... "Verbosity, use -vv... for verbose output.").global(true))
             .arg(arg!(--fix "Fix findings, if possible. Executes clang-tidy with the -fix and -fix-errors options."))
             .arg(
@@ -182,7 +191,6 @@ impl Builder {
                     .action(clap::ArgAction::SetTrue)
                     .help("Suppress warnings; overrides -v"),
             )
-            .subcommand_negates_reqs(true)
             .subcommand(
                 clap::Command::new("schema")
                     .about("Print the schema used for the <JSON> configuration file"),
@@ -202,6 +210,14 @@ impl Builder {
         if self.matches.subcommand_matches("schema").is_some() {
             println!("{}", JsonModel::schema(),);
             process::exit(0);
+        }
+
+        let git_between = self.matches.get_one::<String>("between").cloned();
+        if let Some(range) = &git_between {
+            if !range.contains("...") {
+                return Err(eyre!("Invalid parameter for option --between: {range}"))
+                    .suggestion("Please provide a revision range in the form '<BASE>...<HEAD>'");
+            }
         }
 
         let json_path = self.path_for_key("JSON", true)?;
@@ -266,6 +282,7 @@ impl Builder {
                 .matches
                 .get_one::<std::path::PathBuf>("sarif-output")
                 .cloned(),
+            git_between,
             force: self.matches.get_flag("force"),
             ignore_warn: self.matches.get_flag("suppress-warnings"),
             filter: self

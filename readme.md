@@ -41,6 +41,7 @@ Execute `run-clang-tidy --help` for more details, or `run-clang-tidy schema` for
   - [Speeding up the execution](#speeding-up-the-execution)
   - [Specifying an alternative tidy file and command](#specifying-an-alternative-tidy-file-and-command)
   - [Specifying an alternative build root](#specifying-an-alternative-build-root)
+  - [Exporting SARIF](#exporting-sarif)
   - [Suppressing warnings](#suppressing-warnings)
   - [Applying fixes](#applying-fixes)
 - [Use-cases](#use-cases)
@@ -301,6 +302,18 @@ The command-line options `--tidy` and `--command` allow specifying a `.clang-tid
 The [build root](#the-build-root-and-compile_commandsjson) containing the compilation database is typically not fixed; each build might use a different output folder and tools may be installed in different directories (e.g., if executed as part of a CI chain).
 
 Therefore the command-line option `--build-root` allows to specify the build directory when invoking this script, overriding, e.g., a default directory specified in the configuration `.json` file.
+
+## Exporting SARIF
+
+`run-clang-tidy` now keeps the existing progress bar and per-file `Ok` / `Warning` / `Error` lines while also rendering parsed diagnostics immediately in the terminal. The rendering is inspired by `clang-tidy-sarif` + `sarif-fmt`, so warnings and errors are shown with file, line and column information as soon as each file finishes.
+
+If you also want a machine-readable report, use `--sarif-output`:
+
+```bash
+$ run-clang-tidy path/to/tidy.json --sarif-output out/clang-tidy.sarif
+```
+
+This writes one combined SARIF 2.1.0 report for the whole run without changing the final warning/error summary.
 
 ## Suppressing warnings
 

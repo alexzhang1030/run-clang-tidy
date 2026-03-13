@@ -69,6 +69,8 @@ pub struct Data {
     /// Command-line parameter for the number of jobs to use for executing clang-tidy
     /// If `None` then all available jobs should be used, else the specified number of jobs.
     pub jobs: Option<u8>,
+    /// Optional output path for a combined SARIF report.
+    pub sarif_output: Option<path::PathBuf>,
     /// Command-line option to suppress warnings issued by clang-tidy.
     pub ignore_warn: bool,
     /// Suppress all logging.
@@ -129,6 +131,17 @@ impl Builder {
                 .required(false)
                 .num_args(0..=1)
                 .action(clap::ArgAction::Set),
+            )
+            .arg(
+                Arg::new("sarif-output")
+                    .long("sarif-output")
+                    .help(
+                        "Optional path for writing a combined SARIF report while still rendering \
+                         diagnostics in the terminal.",
+                    )
+                    .value_parser(clap::value_parser!(std::path::PathBuf))
+                    .action(clap::ArgAction::Set)
+                    .required(false),
             )
             .arg(arg!(-v --verbose ... "Verbosity, use -vv... for verbose output.").global(true))
             .arg(arg!(--fix "Fix findings, if possible. Executes clang-tidy with the -fix and -fix-errors options."))
@@ -222,6 +235,10 @@ impl Builder {
             build_root,
             command,
             jobs,
+            sarif_output: self
+                .matches
+                .get_one::<std::path::PathBuf>("sarif-output")
+                .cloned(),
             ignore_warn: self.matches.get_flag("suppress-warnings"),
             // TODO: replace quiet flag with own logger implementation.
             quiet: self.matches.get_flag("quiet"),

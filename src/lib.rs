@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 pub mod cli;
 pub mod cmd;
+mod sarif;
 
 mod globs;
 mod resolve;
@@ -22,6 +23,11 @@ pub struct JsonModel {
 enum Dump {
     Error { msg: String, path: path::PathBuf },
     Warning { msg: String, path: path::PathBuf },
+}
+
+struct RunArtifacts {
+    dump: Option<Dump>,
+    sarif: sarif::Report,
 }
 
 fn log_pretty() -> bool {
@@ -262,7 +268,7 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
     }
     let paths: Vec<_> = paths.collect();
 
-    let (failures, warnings) = {
+    let (failures, warnings, sarif_report) = {
         let dump: Vec<_> = paths
             .into_par_iter()
             .map(|path| {
@@ -278,52 +284,72 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
                     }
                 };
 
-                // step log output
-                let (prefix, style) = match result {
-                    cmd::RunResult::Ok => ("Ok", console::Style::new().green().bold()),
-                    cmd::RunResult::Err(_) => ("Error", console::Style::new().red().bold()),
-                    cmd::RunResult::Warn(_) => {
-                        ("Warning", console::Style::new().color256(58).bold())
+                let (prefix, style, diagnostics) = match result {
+                    cmd::RunResult::Ok => ("Ok", console::Style::new().green().bold(), None),
+                    cmd::RunResult::Err(details) => {
+                        ("Error", console::Style::new().red().bold(), Some(details))
                     }
+                    cmd::RunResult::Warn(details) => (
+                        "Warning",
+                        console::Style::new().color256(58).bold(),
+                        Some(details),
+                    ),
                 };
                 log_step(prefix, path.as_path(), &strip_root, &pb, style);
 
-                // collection
-                match result {
-                    cmd::RunResult::Ok => None,
-                    cmd::RunResult::Err(msg) => {
-                        if !log_pretty() && !data.quiet {
-                            log::error!("{}", msg);
-                        }
-                        Some(Dump::Error {
-                            msg,
-                            path: strip_path,
-                        })
+                let Some(details) = diagnostics else {
+                    return RunArtifacts {
+                        dump: None,
+                        sarif: sarif::Report::default(),
+                    };
+                };
+
+                let analysis = sarif::analyze(&details.diagnostic_text(), strip_root.as_deref());
+                if log_pretty() {
+                    if let Some(rendered) = &analysis.rendered {
+                        pb.println(rendered);
                     }
-                    cmd::RunResult::Warn(msg) => {
-                        if !log_pretty() {
-                            log::warn!("{}", msg);
-                        }
-                        Some(Dump::Warning {
-                            msg,
-                            path: strip_path,
-                        })
+                } else if !data.quiet {
+                    match prefix {
+                        "Error" => log::error!("{}", details.error_message()),
+                        "Warning" => log::warn!("{}", details.warning_message()),
+                        _ => {}
                     }
                 }
+
+                let dump = match prefix {
+                    "Error" => Some(Dump::Error {
+                        msg: details.error_message(),
+                        path: strip_path,
+                    }),
+                    "Warning" => Some(Dump::Warning {
+                        msg: details.warning_message(),
+                        path: strip_path,
+                    }),
+                    _ => None,
+                };
+
+                RunArtifacts {
+                    dump,
+                    sarif: analysis.report,
+                }
             })
-            .flatten()
             .collect();
 
         let mut failures = Vec::with_capacity(dump.len());
         let mut warnings: Vec<_> = vec![];
+        let mut sarif_report = sarif::Report::default();
 
         dump.into_iter().for_each(|item| {
-            match item {
-                Dump::Error { msg, path } => failures.push((path, msg)),
-                Dump::Warning { msg, path } => warnings.push((path, msg)),
-            };
+            sarif_report.append(item.sarif);
+            if let Some(dump) = item.dump {
+                match dump {
+                    Dump::Error { msg, path } => failures.push((path, msg)),
+                    Dump::Warning { msg, path } => warnings.push((path, msg)),
+                };
+            }
         });
-        (failures, warnings)
+        (failures, warnings, sarif_report)
     };
 
     let duration = start.elapsed();
@@ -337,6 +363,27 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
         );
     } else {
         log::info!("{} Finished in {:#?}", step.next(), duration);
+    }
+
+    if let Some(output) = &data.sarif_output {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).wrap_err(format!(
+                "Failed to create SARIF output directory {}",
+                parent.to_string_lossy()
+            ))?;
+        }
+        let file = fs::File::create(output).wrap_err(format!(
+            "Failed to create SARIF output file {}",
+            output.to_string_lossy()
+        ))?;
+        sarif_report.write_to(file).wrap_err(format!(
+            "Failed to write SARIF output file {}",
+            output.to_string_lossy()
+        ))?;
+        log::info!(
+            "Wrote SARIF report to {}",
+            console::style(output.to_string_lossy()).bold(),
+        );
     }
 
     fn collect_dump(items: Vec<(path::PathBuf, String)>, style: console::Style) -> String {

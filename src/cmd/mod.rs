@@ -8,15 +8,65 @@ struct Version {
 }
 
 #[derive(Debug)]
+pub struct RunDetails {
+    pub process_error: Option<String>,
+    pub stderr: String,
+    pub stdout: String,
+}
+
+impl RunDetails {
+    pub fn from_error(error: impl Into<String>) -> Self {
+        Self {
+            process_error: Some(error.into()),
+            stderr: String::new(),
+            stdout: String::new(),
+        }
+    }
+
+    pub fn diagnostic_text(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.stderr.trim().is_empty() {
+            parts.push(self.stderr.trim_end().to_string());
+        }
+        if !self.stdout.trim().is_empty() {
+            parts.push(self.stdout.trim_end().to_string());
+        }
+        parts.join("\n")
+    }
+
+    pub fn error_message(&self) -> String {
+        if let Some(process_error) = &self.process_error {
+            let details = self.diagnostic_text();
+            if details.is_empty() {
+                process_error.clone()
+            } else {
+                format!("{process_error}\n---\n{details}")
+            }
+        } else {
+            self.diagnostic_text()
+        }
+    }
+
+    pub fn warning_message(&self) -> String {
+        let details = self.diagnostic_text();
+        if details.is_empty() {
+            "warnings encountered".to_string()
+        } else {
+            format!("warnings encountered\n---\n{details}")
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum RunResult {
     Ok,
-    Err(String),
-    Warn(String),
+    Err(RunDetails),
+    Warn(RunDetails),
 }
 
 impl From<&io::Error> for RunResult {
     fn from(value: &io::Error) -> Self {
-        RunResult::Err(value.to_string())
+        RunResult::Err(RunDetails::from_error(value.to_string()))
     }
 }
 
@@ -109,14 +159,18 @@ impl Runner {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let details = RunDetails {
+            process_error: None,
+            stderr: stderr.into_owned(),
+            stdout: stdout.into_owned(),
+        };
 
         if let Err(err) = Runner::eval_status(output.status) {
-            if !stderr.is_empty() {
-                return RunResult::Err(format!("{err}\n---\n{stderr}---\n{stdout}"));
-            }
-            return (&err).into();
-        } else if !ignore_warn && !stderr.is_empty() {
-            return RunResult::Warn(format!("warnings encountered\n---\n{stderr}---\n{stdout}"));
+            let mut details = details;
+            details.process_error = Some(err.to_string());
+            return RunResult::Err(details);
+        } else if !ignore_warn && !details.stderr.is_empty() {
+            return RunResult::Warn(details);
         }
         RunResult::Ok
     }

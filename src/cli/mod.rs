@@ -96,6 +96,7 @@ impl Builder {
     fn app() -> clap::Command {
         clap::Command::new(crate_name!())
             .arg_required_else_help(true)
+            .subcommand_negates_reqs(true)
             .version(crate_version!())
             .author(crate_authors!())
             .about(crate_description!())

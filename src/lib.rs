@@ -250,20 +250,6 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
         }
     });
 
-    let pb = indicatif::ProgressBar::new(paths.len() as u64);
-    pb.set_style(
-        indicatif::ProgressStyle::with_template(if console::Term::stdout().size().1 > 80 {
-            "{prefix:>12.cyan.bold} [{bar:26}] {pos}/{len} {wide_msg}"
-        } else {
-            "{prefix:>12.cyan.bold} [{bar:26}] {pos}/{len}"
-        })
-        .unwrap()
-        .progress_chars("=> "),
-    );
-
-    if log_pretty() {
-        pb.set_prefix("Running");
-    }
     let paths: Vec<_> = paths.collect();
     let ctcache = ctcache::Context::new(
         !data.force,
@@ -285,6 +271,21 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
 
     setup_jobs(data.jobs)?;
     log::info!("{} Executing clang-tidy ...\n", step.next(),);
+
+    let pb = indicatif::ProgressBar::new(paths.len() as u64);
+    pb.set_style(
+        indicatif::ProgressStyle::with_template(if console::Term::stdout().size().1 > 80 {
+            "{prefix:>12.cyan.bold} [{bar:26}] {pos}/{len} {wide_msg}"
+        } else {
+            "{prefix:>12.cyan.bold} [{bar:26}] {pos}/{len}"
+        })
+        .unwrap()
+        .progress_chars("=> "),
+    );
+
+    if log_pretty() {
+        pb.set_prefix("Running");
+    }
 
     let (failures, warnings, sarif_report) = {
         let ctcache = ctcache.as_ref();

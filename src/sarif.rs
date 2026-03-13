@@ -4,12 +4,19 @@ use std::{
     sync::OnceLock,
 };
 
+use codespan_reporting::{
+    diagnostic::{self, Diagnostic as CodespanDiagnostic, Label},
+    files::{Files, SimpleFiles},
+    term,
+    term::termcolor::Buffer,
+};
 use regex::Regex;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Diagnostic {
     file: String,
+    source_path: PathBuf,
     line: usize,
     column: usize,
     level: String,
@@ -23,6 +30,7 @@ struct Diagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DiagnosticNote {
     file: String,
+    source_path: PathBuf,
     line: usize,
     column: usize,
     message: String,
@@ -46,6 +54,7 @@ impl Report {
         self.results.extend(other.results);
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.results.is_empty()
     }
@@ -64,6 +73,69 @@ impl Report {
         serde_json::to_writer_pretty(&mut writer, &payload).map_err(io::Error::other)?;
         writer.write_all(b"\n")
     }
+
+    pub fn render_pretty(&self) -> io::Result<Option<String>> {
+        if self.results.is_empty() {
+            return Ok(None);
+        }
+
+        let mut writer = Buffer::no_color();
+        let mut files = SimpleFiles::new();
+        let config = term::Config::default();
+        let mut warnings = 0usize;
+        let mut errors = 0usize;
+
+        for result in &self.results {
+            let mut diagnostic = CodespanDiagnostic::new(map_severity(&result.level));
+            diagnostic.message = result.message.display_text(result.rule_id.as_deref());
+
+            for location in &result.locations {
+                if let Some(label) = load_label(
+                    &mut files,
+                    &location.physical_location,
+                    LabelKind::Primary,
+                    None,
+                )? {
+                    diagnostic.labels.push(label);
+                }
+            }
+
+            for location in &result.related_locations {
+                if let Some(label) = load_label(
+                    &mut files,
+                    &location.physical_location,
+                    LabelKind::Secondary,
+                    Some(location.message.text.clone()),
+                )? {
+                    diagnostic.labels.push(label);
+                }
+            }
+
+            if diagnostic.labels.is_empty() {
+                use std::io::Write;
+                writeln!(writer, "{}", render_plain_result(result))?;
+            } else {
+                term::emit(&mut writer, &config, &files, &diagnostic).map_err(io::Error::other)?;
+            }
+
+            match diagnostic.severity {
+                diagnostic::Severity::Warning => warnings += 1,
+                diagnostic::Severity::Error => errors += 1,
+                _ => {}
+            }
+        }
+
+        use std::io::Write;
+        if warnings > 0 {
+            writeln!(writer, "warning: {} warnings emitted", warnings)?;
+        }
+        if errors > 0 {
+            writeln!(writer, "error: {} errors emitted", errors)?;
+        }
+
+        let rendered = String::from_utf8(writer.into_inner()).map_err(io::Error::other)?;
+        Ok(Some(rendered))
+    }
 }
 
 pub fn analyze(raw: &str, strip_root: Option<&Path>) -> Analysis {
@@ -72,10 +144,14 @@ pub fn analyze(raw: &str, strip_root: Option<&Path>) -> Analysis {
         return Analysis::default();
     }
 
-    let rendered = render_diagnostics(&diagnostics);
     let report = Report {
         results: diagnostics.iter().map(SarifResult::from).collect(),
     };
+    let rendered = report
+        .render_pretty()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| render_diagnostics(&diagnostics));
 
     Analysis {
         rendered: Some(rendered),
@@ -96,6 +172,7 @@ fn parse_diagnostics(raw: &str, strip_root: Option<&Path>) -> Vec<Diagnostic> {
 
         let mut diagnostic = Diagnostic {
             file: parsed.file,
+            source_path: parsed.source_path,
             line: parsed.line,
             column: parsed.column,
             level: parsed.level,
@@ -125,6 +202,7 @@ fn parse_diagnostics(raw: &str, strip_root: Option<&Path>) -> Vec<Diagnostic> {
 
             let mut note_entry = DiagnosticNote {
                 file: note.file,
+                source_path: note.source_path,
                 line: note.line,
                 column: note.column,
                 message: note.message,
@@ -258,6 +336,7 @@ fn parse_header(line: &str, strip_root: Option<&Path>) -> Option<HeaderMatch> {
 
     Some(HeaderMatch {
         file,
+        source_path: PathBuf::from(captures.name("file")?.as_str()),
         line: captures.name("line")?.as_str().parse().ok()?,
         column: captures.name("column")?.as_str().parse().ok()?,
         level: captures.name("level")?.as_str().to_string(),
@@ -282,6 +361,7 @@ fn display_path(file: &str, strip_root: Option<&Path>) -> String {
 
 struct HeaderMatch {
     file: String,
+    source_path: PathBuf,
     line: usize,
     column: usize,
     level: String,
@@ -330,7 +410,12 @@ impl From<&Diagnostic> for SarifResult {
             message: SarifMessage {
                 text: value.message.clone(),
             },
-            locations: vec![SarifLocation::new(&value.file, value.line, value.column)],
+            locations: vec![SarifLocation::new(
+                &value.file,
+                value.source_path.clone(),
+                value.line,
+                value.column,
+            )],
             related_locations: value
                 .notes
                 .iter()
@@ -341,6 +426,7 @@ impl From<&Diagnostic> for SarifResult {
                     },
                     physical_location: SarifPhysicalLocation::new(
                         &note.file,
+                        note.source_path.clone(),
                         note.line,
                         note.column,
                     ),
@@ -362,9 +448,9 @@ struct SarifLocation {
 }
 
 impl SarifLocation {
-    fn new(file: &str, line: usize, column: usize) -> Self {
+    fn new(file: &str, resolved_path: PathBuf, line: usize, column: usize) -> Self {
         Self {
-            physical_location: SarifPhysicalLocation::new(file, line, column),
+            physical_location: SarifPhysicalLocation::new(file, resolved_path, line, column),
         }
     }
 }
@@ -382,10 +468,12 @@ struct SarifPhysicalLocation {
     #[serde(rename = "artifactLocation")]
     artifact_location: SarifArtifactLocation,
     region: SarifRegion,
+    #[serde(skip_serializing)]
+    resolved_path: PathBuf,
 }
 
 impl SarifPhysicalLocation {
-    fn new(file: &str, line: usize, column: usize) -> Self {
+    fn new(file: &str, resolved_path: PathBuf, line: usize, column: usize) -> Self {
         Self {
             artifact_location: SarifArtifactLocation {
                 uri: file.to_string(),
@@ -394,6 +482,7 @@ impl SarifPhysicalLocation {
                 start_line: line,
                 start_column: column,
             },
+            resolved_path,
         }
     }
 }
@@ -409,6 +498,120 @@ struct SarifRegion {
     start_line: usize,
     #[serde(rename = "startColumn")]
     start_column: usize,
+}
+
+impl SarifMessage {
+    fn display_text(&self, rule_id: Option<&str>) -> String {
+        match rule_id {
+            Some(rule_id) if !rule_id.is_empty() => format!("{} [{}]", self.text, rule_id),
+            _ => self.text.clone(),
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+enum LabelKind {
+    Primary,
+    Secondary,
+}
+
+fn map_severity(level: &str) -> diagnostic::Severity {
+    match level {
+        "error" => diagnostic::Severity::Error,
+        "note" => diagnostic::Severity::Note,
+        _ => diagnostic::Severity::Warning,
+    }
+}
+
+fn load_label(
+    files: &mut SimpleFiles<String, String>,
+    location: &SarifPhysicalLocation,
+    kind: LabelKind,
+    message: Option<String>,
+) -> io::Result<Option<Label<usize>>> {
+    let contents = match std::fs::read_to_string(&location.resolved_path) {
+        Ok(contents) => contents,
+        Err(_) => return Ok(None),
+    };
+
+    let file_id = files.add(location.artifact_location.uri.clone(), contents);
+    let Some(range) = byte_range(file_id, files, &location.region) else {
+        return Ok(None);
+    };
+
+    let label = match kind {
+        LabelKind::Primary => Label::primary(file_id, range),
+        LabelKind::Secondary => {
+            let mut label = Label::secondary(file_id, range);
+            if let Some(message) = message {
+                label = label.with_message(message);
+            }
+            label
+        }
+    };
+
+    Ok(Some(label))
+}
+
+fn byte_range(
+    file_id: usize,
+    files: &SimpleFiles<String, String>,
+    region: &SarifRegion,
+) -> Option<std::ops::Range<usize>> {
+    let line_index = region.start_line.checked_sub(1)?;
+    let line = files.get(file_id).ok()?.source().lines().nth(line_index)?;
+    let line_range = files.line_range(file_id, line_index).ok()?;
+    let column_index = region.start_column.saturating_sub(1);
+
+    let start_in_line = line
+        .char_indices()
+        .nth(column_index)
+        .map(|(idx, _)| idx)
+        .unwrap_or_else(|| line.len().saturating_sub(1));
+    let start = line_range.start + start_in_line;
+    let width = line[start_in_line..]
+        .chars()
+        .next()
+        .map(|ch| ch.len_utf8())
+        .unwrap_or(1);
+
+    Some(start..start + width)
+}
+
+fn render_plain_result(result: &SarifResult) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "{}:{}:{}: {}: {}",
+        result
+            .locations
+            .first()
+            .map(|location| location.physical_location.artifact_location.uri.as_str())
+            .unwrap_or("<unknown>"),
+        result
+            .locations
+            .first()
+            .map(|location| location.physical_location.region.start_line)
+            .unwrap_or(0),
+        result
+            .locations
+            .first()
+            .map(|location| location.physical_location.region.start_column)
+            .unwrap_or(0),
+        result.level,
+        result.message.display_text(result.rule_id.as_deref()),
+    ));
+
+    for location in &result.related_locations {
+        lines.push(format!(
+            "{}:{}:{}: note: {}",
+            location.physical_location.artifact_location.uri,
+            location.physical_location.region.start_line,
+            location.physical_location.region.start_column,
+            location.message.text,
+        ));
+    }
+
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -432,7 +635,7 @@ src/demo.cpp:12:25: note: Passing null pointer value via 1st parameter 'str'
         let rendered = analysis.rendered.expect("rendered output");
         assert!(rendered.contains("warning: broken thing [demo-check]"));
         assert!(rendered.contains("src/demo.cpp:8:10"));
-        assert!(rendered.contains("note: Passing null pointer value"));
+        assert!(rendered.contains("Passing null pointer value"));
 
         let mut buf = Vec::new();
         analysis.report.write_to(&mut buf).unwrap();

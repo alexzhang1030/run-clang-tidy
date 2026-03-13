@@ -305,25 +305,47 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
                 };
 
                 let analysis = sarif::analyze(&details.diagnostic_text(), strip_root.as_deref());
-                if log_pretty() {
-                    if let Some(rendered) = &analysis.rendered {
-                        pb.println(rendered);
-                    }
-                } else if !data.quiet {
-                    match prefix {
-                        "Error" => log::error!("{}", details.error_message()),
-                        "Warning" => log::warn!("{}", details.warning_message()),
-                        _ => {}
+                if !data.quiet {
+                    let output = if data.raw {
+                        match prefix {
+                            "Error" => Some(details.error_message()),
+                            "Warning" => Some(details.warning_message()),
+                            _ => None,
+                        }
+                    } else {
+                        analysis
+                            .rendered
+                            .clone()
+                            .or_else(|| details.process_error.clone())
+                    };
+
+                    if let Some(output) = output {
+                        if log_pretty() {
+                            pb.println(output.trim_end());
+                        } else {
+                            eprintln!("{}", output.trim_end());
+                        }
                     }
                 }
 
                 let dump = match prefix {
                     "Error" => Some(Dump::Error {
-                        msg: details.error_message(),
+                        msg: if data.raw {
+                            details.error_message()
+                        } else {
+                            details
+                                .process_error
+                                .clone()
+                                .unwrap_or_else(|| "clang-tidy reported errors".to_string())
+                        },
                         path: strip_path,
                     }),
                     "Warning" => Some(Dump::Warning {
-                        msg: details.warning_message(),
+                        msg: if data.raw {
+                            details.warning_message()
+                        } else {
+                            "clang-tidy reported warnings".to_string()
+                        },
                         path: strip_path,
                     }),
                     _ => None,

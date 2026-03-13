@@ -73,6 +73,8 @@ pub struct Data {
     pub sarif_output: Option<path::PathBuf>,
     /// Command-line option to suppress warnings issued by clang-tidy.
     pub ignore_warn: bool,
+    /// Print raw clang-tidy output instead of formatted diagnostics.
+    pub raw: bool,
     /// Suppress all logging.
     pub quiet: bool,
     /// Run with -fix argument.
@@ -145,6 +147,12 @@ impl Builder {
             )
             .arg(arg!(-v --verbose ... "Verbosity, use -vv... for verbose output.").global(true))
             .arg(arg!(--fix "Fix findings, if possible. Executes clang-tidy with the -fix and -fix-errors options."))
+            .arg(
+                Arg::new("raw")
+                    .long("raw")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Print raw clang-tidy output instead of formatted diagnostics"),
+            )
             .arg(
                 arg!(-q --quiet "Suppress all output except for errors; overrides -v")
                     .action(clap::ArgAction::SetTrue),
@@ -240,6 +248,7 @@ impl Builder {
                 .get_one::<std::path::PathBuf>("sarif-output")
                 .cloned(),
             ignore_warn: self.matches.get_flag("suppress-warnings"),
+            raw: self.matches.get_flag("raw"),
             // TODO: replace quiet flag with own logger implementation.
             quiet: self.matches.get_flag("quiet"),
             fix: self.matches.get_flag("fix"),

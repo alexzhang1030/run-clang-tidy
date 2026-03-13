@@ -38,6 +38,10 @@ fn log_pretty() -> bool {
     !log::log_enabled!(log::Level::Debug) && log::log_enabled!(log::Level::Info)
 }
 
+fn should_reveal_progress(position: u64) -> bool {
+    position == 0
+}
+
 struct LogStep(u8);
 
 impl LogStep {
@@ -282,6 +286,7 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
         .unwrap()
         .progress_chars("=> "),
     );
+    pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
 
     if log_pretty() {
         pb.set_prefix("Running");
@@ -487,6 +492,9 @@ fn log_step(
     };
 
     if log_pretty() {
+        if should_reveal_progress(progress.position()) {
+            progress.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+        }
         progress.println(format!(
             "{:>12} {}",
             style.apply_to(prefix),
@@ -495,5 +503,17 @@ fn log_step(
         progress.inc(1);
     } else {
         log::info!("  + {}", path.to_string_lossy());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_reveal_progress;
+
+    #[test]
+    fn progress_stays_hidden_until_first_result() {
+        assert!(should_reveal_progress(0));
+        assert!(!should_reveal_progress(1));
+        assert!(!should_reveal_progress(7));
     }
 }

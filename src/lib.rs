@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 pub mod cli;
 pub mod cmd;
+mod ctcache;
 mod sarif;
 
 mod globs;
@@ -267,12 +268,35 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
         pb.set_prefix("Running");
     }
     let paths: Vec<_> = paths.collect();
+    let ctcache = ctcache::Context::new(
+        data.ctcache,
+        &build_root,
+        cmd.get_path().as_path(),
+        cmd.get_version().as_deref(),
+    )?;
+    if data.ctcache {
+        if data.fix {
+            log::warn!("ctcache is bypassed when --fix is enabled");
+        } else if let Some(ctcache) = &ctcache {
+            log::info!(
+                "{} Using ctcache directory {}",
+                step.next(),
+                console::style(ctcache.cache_dir().to_string_lossy()).bold(),
+            );
+        }
+    }
 
     let (failures, warnings, sarif_report) = {
+        let ctcache = ctcache.as_ref();
         let dump: Vec<_> = paths
             .into_par_iter()
             .map(|path| {
-                let result = cmd.run_tidy(&path, &build_root, data.fix, data.ignore_warn);
+                let result = match ctcache {
+                    Some(ctcache) => {
+                        ctcache.run_or_execute(&cmd, &path, data.fix, data.ignore_warn)
+                    }
+                    None => cmd.run_tidy(&path, &build_root, data.fix, data.ignore_warn),
+                };
                 let strip_path = match &strip_root {
                     None => path.clone(),
                     Some(strip) => {

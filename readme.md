@@ -41,6 +41,7 @@ Execute `run-clang-tidy --help` for more details, or `run-clang-tidy schema` for
   - [Speeding up the execution](#speeding-up-the-execution)
   - [Specifying an alternative tidy file and command](#specifying-an-alternative-tidy-file-and-command)
   - [Specifying an alternative build root](#specifying-an-alternative-build-root)
+  - [How It Works: `--ctcache`](#how-it-works---ctcache)
   - [Exporting SARIF](#exporting-sarif)
   - [Suppressing warnings](#suppressing-warnings)
   - [Applying fixes](#applying-fixes)
@@ -303,6 +304,40 @@ The [build root](#the-build-root-and-compile_commandsjson) containing the compil
 
 Therefore the command-line option `--build-root` allows to specify the build directory when invoking this script, overriding, e.g., a default directory specified in the configuration `.json` file.
 
+## How It Works: `--ctcache`
+
+`run-clang-tidy` can optionally cache successful `clang-tidy` runs locally by using the command-line option `--ctcache`.
+
+```bash
+$ run-clang-tidy path/to/tidy.json --ctcache
+```
+
+The current implementation is built into this binary and does **not** invoke the Python wrapper from [`lib/ctcache`](lib/ctcache). It borrows the same general idea: if the relevant inputs of a `clang-tidy` invocation did not change, the previous result is reused instead of executing `clang-tidy` again.
+
+The current cache key includes:
+
+* the resolved `clang-tidy` executable path,
+* the detected `clang-tidy` version,
+* the analyzed source file path and file contents,
+* the matching entry from `compile_commands.json`,
+* and the output of `clang-tidy --dump-config` for that translation unit.
+
+On a cache hit, the cached stdout/stderr payload is replayed, so terminal rendering and SARIF generation continue to work the same way as on a live run. On a miss, `clang-tidy` is executed normally and successful results are written to the local cache directory.
+
+The current implementation intentionally keeps the first version small and conservative:
+
+* it only implements a local on-disk cache,
+* it only stores successful runs,
+* and it bypasses the cache when `--fix` is used.
+
+Future work planned for this area includes:
+
+* configurable cache directories and retention policies,
+* cache statistics and explicit cache maintenance commands,
+* support for path stripping and other hash-normalization controls similar to upstream `ctcache`,
+* optional remote backends or shared-cache modes,
+* and broader compatibility with more `clang-tidy` invocation styles.
+
 ## Exporting SARIF
 
 `run-clang-tidy` now keeps the existing progress bar and per-file `Ok` / `Warning` / `Error` lines while also rendering parsed diagnostics immediately in the terminal. The rendering is inspired by `clang-tidy-sarif` + `sarif-fmt`, so warnings and errors are shown with file, line and column information as soon as each file finishes.
@@ -427,3 +462,5 @@ This might be fixed in a future version of `run-clang-tidy`, i.e., the tool migh
 # Roadmap
 
 * Update the default behaviour or add a `--strict` option to avoid running the analysis for files that are not part of the compilation database.
+* Extend the built-in `--ctcache` support with configurable cache locations, maintenance commands and hit/miss statistics.
+* Add more of the upstream `ctcache` feature set, especially path stripping, broader hash controls and optional shared-cache backends.

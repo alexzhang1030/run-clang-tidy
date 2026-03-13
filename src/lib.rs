@@ -49,7 +49,7 @@ impl LogStep {
         // TODO: the actual number of steps could be determined by a macro?
         let str = format!(
             "{}",
-            console::style(format!("[ {:1}/6 ]", self.0)).bold().dim()
+            console::style(format!("[ {:1}/7 ]", self.0)).bold().dim()
         );
         self.0 += 1;
         if log_pretty() {
@@ -250,9 +250,6 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
         }
     });
 
-    setup_jobs(data.jobs)?;
-    log::info!("{} Executing clang-tidy ...\n", step.next(),);
-
     let pb = indicatif::ProgressBar::new(paths.len() as u64);
     pb.set_style(
         indicatif::ProgressStyle::with_template(if console::Term::stdout().size().1 > 80 {
@@ -269,22 +266,25 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
     }
     let paths: Vec<_> = paths.collect();
     let ctcache = ctcache::Context::new(
-        data.ctcache,
+        !data.force,
         &build_root,
         cmd.get_path().as_path(),
         cmd.get_version().as_deref(),
     )?;
-    if data.ctcache {
-        if data.fix {
-            log::warn!("ctcache is bypassed when --fix is enabled");
-        } else if let Some(ctcache) = &ctcache {
-            log::info!(
-                "{} Using ctcache directory {}",
-                step.next(),
-                console::style(ctcache.cache_dir().to_string_lossy()).bold(),
-            );
-        }
+    if data.force {
+        log::info!("{} Bypassing ctcache due to --force", step.next());
+    } else if data.fix {
+        log::warn!("ctcache is bypassed when --fix is enabled");
+    } else if let Some(ctcache) = &ctcache {
+        log::info!(
+            "{} Using ctcache directory {}",
+            step.next(),
+            console::style(ctcache.cache_dir().to_string_lossy()).bold(),
+        );
     }
+
+    setup_jobs(data.jobs)?;
+    log::info!("{} Executing clang-tidy ...\n", step.next(),);
 
     let (failures, warnings, sarif_report) = {
         let ctcache = ctcache.as_ref();

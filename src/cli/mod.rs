@@ -72,8 +72,8 @@ pub struct Data {
     pub jobs: Option<u8>,
     /// Optional output path for a combined SARIF report.
     pub sarif_output: Option<path::PathBuf>,
-    /// Enable the built-in local ctcache for clang-tidy results.
-    pub ctcache: bool,
+    /// Force a fresh clang-tidy execution and bypass the built-in ctcache.
+    pub force: bool,
     /// Command-line option to suppress warnings issued by clang-tidy.
     pub ignore_warn: bool,
     /// Filter terminal diagnostics by level.
@@ -150,14 +150,15 @@ impl Builder {
                     .action(clap::ArgAction::Set)
                     .required(false),
             )
-            .arg(
-                Arg::new("ctcache")
-                    .long("ctcache")
-                    .action(clap::ArgAction::SetTrue)
-                    .help("Enable the built-in local ctcache for clang-tidy results"),
-            )
             .arg(arg!(-v --verbose ... "Verbosity, use -vv... for verbose output.").global(true))
             .arg(arg!(--fix "Fix findings, if possible. Executes clang-tidy with the -fix and -fix-errors options."))
+            .arg(
+                Arg::new("force")
+                    .short('f')
+                    .long("force")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Bypass the built-in ctcache and force fresh clang-tidy execution"),
+            )
             .arg(
                 Arg::new("filter")
                     .long("filter")
@@ -265,7 +266,7 @@ impl Builder {
                 .matches
                 .get_one::<std::path::PathBuf>("sarif-output")
                 .cloned(),
-            ctcache: self.matches.get_flag("ctcache"),
+            force: self.matches.get_flag("force"),
             ignore_warn: self.matches.get_flag("suppress-warnings"),
             filter: self
                 .matches

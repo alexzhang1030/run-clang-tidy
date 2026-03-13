@@ -264,10 +264,7 @@ fn default_cache_dir() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "unknown".to_string());
-    std::env::temp_dir().join(format!("run-clang-tidy-ctcache-{user}"))
+    std::env::temp_dir().join("ct-cache")
 }
 
 struct HashBuilder {

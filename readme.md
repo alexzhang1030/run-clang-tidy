@@ -41,7 +41,7 @@ Execute `run-clang-tidy --help` for more details, or `run-clang-tidy schema` for
   - [Speeding up the execution](#speeding-up-the-execution)
   - [Specifying an alternative tidy file and command](#specifying-an-alternative-tidy-file-and-command)
   - [Specifying an alternative build root](#specifying-an-alternative-build-root)
-  - [How It Works: `--ctcache`](#how-it-works---ctcache)
+  - [How It Works: Built-in ctcache](#how-it-works-built-in-ctcache)
   - [Exporting SARIF](#exporting-sarif)
   - [Suppressing warnings](#suppressing-warnings)
   - [Applying fixes](#applying-fixes)
@@ -304,12 +304,18 @@ The [build root](#the-build-root-and-compile_commandsjson) containing the compil
 
 Therefore the command-line option `--build-root` allows to specify the build directory when invoking this script, overriding, e.g., a default directory specified in the configuration `.json` file.
 
-## How It Works: `--ctcache`
+## How It Works: Built-in ctcache
 
-`run-clang-tidy` can optionally cache successful `clang-tidy` runs locally by using the command-line option `--ctcache`.
+`run-clang-tidy` now enables a built-in local ctcache by default.
 
 ```bash
-$ run-clang-tidy path/to/tidy.json --ctcache
+$ run-clang-tidy path/to/tidy.json
+```
+
+If you want to bypass the cache and force a fresh `clang-tidy` execution, use `--force` or `-f`:
+
+```bash
+$ run-clang-tidy path/to/tidy.json --force
 ```
 
 The current implementation is built into this binary and does **not** invoke the Python wrapper from [`lib/ctcache`](lib/ctcache). It borrows the same general idea: if the relevant inputs of a `clang-tidy` invocation did not change, the previous result is reused instead of executing `clang-tidy` again.
@@ -328,7 +334,8 @@ The current implementation intentionally keeps the first version small and conse
 
 * it only implements a local on-disk cache,
 * it only stores successful runs,
-* and it bypasses the cache when `--fix` is used.
+* it bypasses the cache when `--fix` is used,
+* and `--force` / `-f` bypasses the cache explicitly for one run.
 
 Future work planned for this area includes:
 

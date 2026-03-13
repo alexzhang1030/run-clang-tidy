@@ -314,8 +314,7 @@ pub fn run(data: cli::Data) -> eyre::Result<()> {
                         }
                     } else {
                         analysis
-                            .rendered
-                            .clone()
+                            .render(data.filter.as_ref())
                             .or_else(|| details.process_error.clone())
                     };
 

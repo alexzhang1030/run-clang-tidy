@@ -4,6 +4,7 @@ mod handlers;
 mod logging;
 pub mod utils;
 
+use crate::sarif;
 use clap::{arg, crate_authors, crate_description, crate_name, crate_version, Arg};
 #[allow(unused_imports)]
 use color_eyre::{eyre::eyre, eyre::WrapErr, Help};
@@ -73,6 +74,8 @@ pub struct Data {
     pub sarif_output: Option<path::PathBuf>,
     /// Command-line option to suppress warnings issued by clang-tidy.
     pub ignore_warn: bool,
+    /// Filter terminal diagnostics by level.
+    pub filter: Option<sarif::LevelFilter>,
     /// Print raw clang-tidy output instead of formatted diagnostics.
     pub raw: bool,
     /// Suppress all logging.
@@ -147,6 +150,13 @@ impl Builder {
             )
             .arg(arg!(-v --verbose ... "Verbosity, use -vv... for verbose output.").global(true))
             .arg(arg!(--fix "Fix findings, if possible. Executes clang-tidy with the -fix and -fix-errors options."))
+            .arg(
+                Arg::new("filter")
+                    .long("filter")
+                    .value_name("LEVELS")
+                    .help("Comma-separated terminal diagnostic levels, e.g. error or error,warning,note")
+                    .action(clap::ArgAction::Set),
+            )
             .arg(
                 Arg::new("raw")
                     .long("raw")
@@ -248,6 +258,12 @@ impl Builder {
                 .get_one::<std::path::PathBuf>("sarif-output")
                 .cloned(),
             ignore_warn: self.matches.get_flag("suppress-warnings"),
+            filter: self
+                .matches
+                .get_one::<String>("filter")
+                .map(|value| sarif::LevelFilter::parse(value))
+                .transpose()
+                .wrap_err("Invalid parameter for option --filter")?,
             raw: self.matches.get_flag("raw"),
             // TODO: replace quiet flag with own logger implementation.
             quiet: self.matches.get_flag("quiet"),

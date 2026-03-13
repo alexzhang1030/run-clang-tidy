@@ -1,15 +1,10 @@
 use std::{
+    collections::BTreeSet,
     io,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
 
-use codespan_reporting::{
-    diagnostic::{self, Diagnostic as CodespanDiagnostic, Label},
-    files::{Files, SimpleFiles},
-    term,
-    term::termcolor::Buffer,
-};
 use regex::Regex;
 use serde::Serialize;
 
@@ -40,7 +35,7 @@ struct DiagnosticNote {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Analysis {
-    pub rendered: Option<String>,
+    diagnostics: Vec<Diagnostic>,
     pub report: Report,
 }
 
@@ -73,69 +68,6 @@ impl Report {
         serde_json::to_writer_pretty(&mut writer, &payload).map_err(io::Error::other)?;
         writer.write_all(b"\n")
     }
-
-    pub fn render_pretty(&self) -> io::Result<Option<String>> {
-        if self.results.is_empty() {
-            return Ok(None);
-        }
-
-        let mut writer = Buffer::no_color();
-        let mut files = SimpleFiles::new();
-        let config = term::Config::default();
-        let mut warnings = 0usize;
-        let mut errors = 0usize;
-
-        for result in &self.results {
-            let mut diagnostic = CodespanDiagnostic::new(map_severity(&result.level));
-            diagnostic.message = result.message.display_text(result.rule_id.as_deref());
-
-            for location in &result.locations {
-                if let Some(label) = load_label(
-                    &mut files,
-                    &location.physical_location,
-                    LabelKind::Primary,
-                    None,
-                )? {
-                    diagnostic.labels.push(label);
-                }
-            }
-
-            for location in &result.related_locations {
-                if let Some(label) = load_label(
-                    &mut files,
-                    &location.physical_location,
-                    LabelKind::Secondary,
-                    Some(location.message.text.clone()),
-                )? {
-                    diagnostic.labels.push(label);
-                }
-            }
-
-            if diagnostic.labels.is_empty() {
-                use std::io::Write;
-                writeln!(writer, "{}", render_plain_result(result))?;
-            } else {
-                term::emit(&mut writer, &config, &files, &diagnostic).map_err(io::Error::other)?;
-            }
-
-            match diagnostic.severity {
-                diagnostic::Severity::Warning => warnings += 1,
-                diagnostic::Severity::Error => errors += 1,
-                _ => {}
-            }
-        }
-
-        use std::io::Write;
-        if warnings > 0 {
-            writeln!(writer, "warning: {} warnings emitted", warnings)?;
-        }
-        if errors > 0 {
-            writeln!(writer, "error: {} errors emitted", errors)?;
-        }
-
-        let rendered = String::from_utf8(writer.into_inner()).map_err(io::Error::other)?;
-        Ok(Some(rendered))
-    }
 }
 
 pub fn analyze(raw: &str, strip_root: Option<&Path>) -> Analysis {
@@ -147,15 +79,16 @@ pub fn analyze(raw: &str, strip_root: Option<&Path>) -> Analysis {
     let report = Report {
         results: diagnostics.iter().map(SarifResult::from).collect(),
     };
-    let rendered = report
-        .render_pretty()
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| render_diagnostics(&diagnostics));
 
     Analysis {
-        rendered: Some(rendered),
+        diagnostics,
         report,
+    }
+}
+
+impl Analysis {
+    pub fn render(&self, filter: Option<&LevelFilter>) -> Option<String> {
+        render_diagnostics(&self.diagnostics, filter)
     }
 }
 
@@ -251,54 +184,6 @@ fn attach_context(
     }
 }
 
-fn render_diagnostics(items: &[Diagnostic]) -> String {
-    let mut out = Vec::new();
-    for item in items {
-        out.push(render_primary(item));
-        for note in &item.notes {
-            out.push(render_note(note));
-        }
-    }
-    out.join("\n\n")
-}
-
-fn render_primary(item: &Diagnostic) -> String {
-    let mut lines = Vec::new();
-    let level = style_level(&item.level);
-    let message = match &item.rule_id {
-        Some(rule_id) if !rule_id.is_empty() => format!("{} [{}]", item.message, rule_id),
-        _ => item.message.clone(),
-    };
-
-    lines.push(format!("{level}: {message}"));
-    lines.push(format!("  --> {}:{}:{}", item.file, item.line, item.column));
-
-    if let Some(source_line) = &item.source_line {
-        lines.push(format!("{:>4} | {}", item.line, source_line.trim_start()));
-    }
-    if let Some(caret_line) = &item.caret_line {
-        lines.push(format!("     | {}", caret_line.trim_start()));
-    }
-
-    lines.join("\n")
-}
-
-fn render_note(item: &DiagnosticNote) -> String {
-    let mut lines = vec![
-        format!("note: {}", item.message),
-        format!("  --> {}:{}:{}", item.file, item.line, item.column),
-    ];
-
-    if let Some(source_line) = &item.source_line {
-        lines.push(format!("{:>4} | {}", item.line, source_line.trim_start()));
-    }
-    if let Some(caret_line) = &item.caret_line {
-        lines.push(format!("     | {}", caret_line.trim_start()));
-    }
-
-    lines.join("\n")
-}
-
 fn style_level(level: &str) -> String {
     let styled = match level {
         "error" => console::style(level).red().bold(),
@@ -332,11 +217,11 @@ fn parse_header(line: &str, strip_root: Option<&Path>) -> Option<HeaderMatch> {
 
     let captures = regex.captures(line)?;
     let file = captures.name("file")?.as_str();
-    let file = display_path(file, strip_root);
+    let source_path = resolve_path(file, strip_root);
 
     Some(HeaderMatch {
-        file,
-        source_path: PathBuf::from(captures.name("file")?.as_str()),
+        file: display_path(&source_path),
+        source_path,
         line: captures.name("line")?.as_str().parse().ok()?,
         column: captures.name("column")?.as_str().parse().ok()?,
         level: captures.name("level")?.as_str().to_string(),
@@ -345,18 +230,20 @@ fn parse_header(line: &str, strip_root: Option<&Path>) -> Option<HeaderMatch> {
     })
 }
 
-fn display_path(file: &str, strip_root: Option<&Path>) -> String {
+fn resolve_path(file: &str, strip_root: Option<&Path>) -> PathBuf {
     let path = PathBuf::from(file);
-    match strip_root {
-        Some(strip_root) => {
-            if let Ok(stripped) = path.strip_prefix(strip_root) {
-                stripped.to_string_lossy().into_owned()
-            } else {
-                path.to_string_lossy().into_owned()
-            }
-        }
-        None => file.to_string(),
+    if path.is_absolute() {
+        return path;
     }
+
+    match strip_root {
+        Some(strip_root) => strip_root.join(path),
+        None => path,
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 struct HeaderMatch {
@@ -500,123 +387,167 @@ struct SarifRegion {
     start_column: usize,
 }
 
-impl SarifMessage {
-    fn display_text(&self, rule_id: Option<&str>) -> String {
-        match rule_id {
-            Some(rule_id) if !rule_id.is_empty() => format!("{} [{}]", self.text, rule_id),
-            _ => self.text.clone(),
+#[derive(Debug, Clone)]
+pub struct LevelFilter {
+    levels: BTreeSet<String>,
+}
+
+impl LevelFilter {
+    pub fn parse(value: &str) -> eyre::Result<Self> {
+        let levels: BTreeSet<_> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|level| !level.is_empty())
+            .map(str::to_owned)
+            .collect();
+
+        if levels.is_empty() {
+            return Err(eyre::eyre!(
+                "Expected at least one diagnostic level in --filter"
+            ));
         }
-    }
-}
 
-#[derive(Copy, Clone)]
-enum LabelKind {
-    Primary,
-    Secondary,
-}
-
-fn map_severity(level: &str) -> diagnostic::Severity {
-    match level {
-        "error" => diagnostic::Severity::Error,
-        "note" => diagnostic::Severity::Note,
-        _ => diagnostic::Severity::Warning,
-    }
-}
-
-fn load_label(
-    files: &mut SimpleFiles<String, String>,
-    location: &SarifPhysicalLocation,
-    kind: LabelKind,
-    message: Option<String>,
-) -> io::Result<Option<Label<usize>>> {
-    let contents = match std::fs::read_to_string(&location.resolved_path) {
-        Ok(contents) => contents,
-        Err(_) => return Ok(None),
-    };
-
-    let file_id = files.add(location.artifact_location.uri.clone(), contents);
-    let Some(range) = byte_range(file_id, files, &location.region) else {
-        return Ok(None);
-    };
-
-    let label = match kind {
-        LabelKind::Primary => Label::primary(file_id, range),
-        LabelKind::Secondary => {
-            let mut label = Label::secondary(file_id, range);
-            if let Some(message) = message {
-                label = label.with_message(message);
+        for level in &levels {
+            if !matches!(level.as_str(), "error" | "warning" | "note" | "info") {
+                return Err(eyre::eyre!(format!(
+                    "Unsupported diagnostic level '{level}' in --filter"
+                )));
             }
-            label
         }
-    };
 
-    Ok(Some(label))
+        Ok(Self { levels })
+    }
+
+    fn allows(&self, level: &str) -> bool {
+        self.levels.contains(level)
+    }
 }
 
-fn byte_range(
-    file_id: usize,
-    files: &SimpleFiles<String, String>,
-    region: &SarifRegion,
-) -> Option<std::ops::Range<usize>> {
-    let line_index = region.start_line.checked_sub(1)?;
-    let line = files.get(file_id).ok()?.source().lines().nth(line_index)?;
-    let line_range = files.line_range(file_id, line_index).ok()?;
-    let column_index = region.start_column.saturating_sub(1);
+fn render_diagnostics(items: &[Diagnostic], filter: Option<&LevelFilter>) -> Option<String> {
+    let mut out = Vec::new();
+    let mut warning_count = 0usize;
+    let mut error_count = 0usize;
 
-    let start_in_line = line
-        .char_indices()
-        .nth(column_index)
-        .map(|(idx, _)| idx)
-        .unwrap_or_else(|| line.len().saturating_sub(1));
-    let start = line_range.start + start_in_line;
-    let width = line[start_in_line..]
-        .chars()
-        .next()
-        .map(|ch| ch.len_utf8())
-        .unwrap_or(1);
+    for item in items {
+        if filter
+            .map(|filter| filter.allows(&item.level))
+            .unwrap_or(true)
+        {
+            if item.level == "warning" {
+                warning_count += 1;
+            } else if item.level == "error" {
+                error_count += 1;
+            }
+            out.push(render_block(
+                &item.level,
+                &item.message,
+                item.source_path.as_path(),
+                item.line,
+                item.column,
+                item.source_line.as_deref(),
+                item.caret_line.as_deref(),
+            ));
+        }
 
-    Some(start..start + width)
+        for note in &item.notes {
+            if filter.map(|filter| filter.allows("note")).unwrap_or(true) {
+                out.push(render_block(
+                    "note",
+                    &note.message,
+                    note.source_path.as_path(),
+                    note.line,
+                    note.column,
+                    note.source_line.as_deref(),
+                    note.caret_line.as_deref(),
+                ));
+            }
+        }
+    }
+
+    if out.is_empty() {
+        return None;
+    }
+
+    if warning_count > 0 {
+        out.push(format!(
+            "{}: {} warnings emitted",
+            style_level("warning"),
+            warning_count
+        ));
+    }
+    if error_count > 0 {
+        out.push(format!(
+            "{}: {} errors emitted",
+            style_level("error"),
+            error_count
+        ));
+    }
+
+    Some(out.join("\n\n"))
 }
 
-fn render_plain_result(result: &SarifResult) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "{}:{}:{}: {}: {}",
-        result
-            .locations
-            .first()
-            .map(|location| location.physical_location.artifact_location.uri.as_str())
-            .unwrap_or("<unknown>"),
-        result
-            .locations
-            .first()
-            .map(|location| location.physical_location.region.start_line)
-            .unwrap_or(0),
-        result
-            .locations
-            .first()
-            .map(|location| location.physical_location.region.start_column)
-            .unwrap_or(0),
-        result.level,
-        result.message.display_text(result.rule_id.as_deref()),
-    ));
+fn render_block(
+    level: &str,
+    message: &str,
+    path: &Path,
+    line: usize,
+    column: usize,
+    source_line: Option<&str>,
+    caret_line: Option<&str>,
+) -> String {
+    let gutter_width = line.to_string().len();
+    let pipe = console::style("│").dim();
+    let location_prefix = console::style("┌─").dim();
 
-    for location in &result.related_locations {
+    let mut lines = vec![
+        format!("{}: {}", style_level(level), message),
+        format!(
+            "    {} {}:{}:{}",
+            location_prefix,
+            console::style(path.to_string_lossy()).cyan().bold(),
+            line,
+            column
+        ),
+        format!("    {}", pipe),
+    ];
+
+    if let Some(source_line) = source_line {
         lines.push(format!(
-            "{}:{}:{}: note: {}",
-            location.physical_location.artifact_location.uri,
-            location.physical_location.region.start_line,
-            location.physical_location.region.start_column,
-            location.message.text,
+            "{:>width$} {} {}",
+            line,
+            pipe,
+            source_line.trim_end(),
+            width = gutter_width
+        ));
+    }
+
+    if let Some(caret_line) = caret_line {
+        lines.push(format!(
+            "{:>width$} {} {}",
+            "",
+            pipe,
+            style_caret(level, caret_line.trim_end()),
+            width = gutter_width
         ));
     }
 
     lines.join("\n")
 }
 
+fn style_caret(level: &str, caret_line: &str) -> String {
+    let style = match level {
+        "error" => console::Style::new().red().bold(),
+        "warning" => console::Style::new().yellow().bold(),
+        "note" => console::Style::new().blue().bold(),
+        _ => console::Style::new().white().bold(),
+    };
+
+    style.apply_to(caret_line).to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{analyze, Report};
+    use super::{analyze, LevelFilter, Report};
 
     #[test]
     fn parses_and_renders_clang_tidy_output() {
@@ -632,10 +563,10 @@ src/demo.cpp:12:25: note: Passing null pointer value via 1st parameter 'str'
 
         let analysis = analyze(raw, None);
 
-        let rendered = analysis.rendered.expect("rendered output");
-        assert!(rendered.contains("warning: broken thing [demo-check]"));
+        let rendered = analysis.render(None).expect("rendered output");
+        assert!(rendered.contains("warning: broken thing"));
         assert!(rendered.contains("src/demo.cpp:8:10"));
-        assert!(rendered.contains("Passing null pointer value"));
+        assert!(rendered.contains("note: Passing null pointer value"));
 
         let mut buf = Vec::new();
         analysis.report.write_to(&mut buf).unwrap();
@@ -647,8 +578,27 @@ src/demo.cpp:12:25: note: Passing null pointer value via 1st parameter 'str'
     #[test]
     fn empty_report_stays_empty() {
         let analysis = analyze("no diagnostics here", None);
-        assert_eq!(analysis.rendered, None);
+        assert_eq!(analysis.render(None), None);
         assert!(Report::default().is_empty());
         assert!(analysis.report.is_empty());
+    }
+
+    #[test]
+    fn filter_keeps_requested_levels_only() {
+        let raw = r#"
+src/demo.cpp:8:10: warning: broken thing [demo-check]
+  return str[0];
+         ^~~~~~
+src/demo.cpp:12:25: note: Passing null pointer value via 1st parameter 'str'
+  return get_first_char(nullptr);
+                        ^~~~~~~
+"#;
+
+        let analysis = analyze(raw, None);
+        let filter = LevelFilter::parse("note").unwrap();
+        let rendered = analysis.render(Some(&filter)).expect("filtered output");
+
+        assert!(!rendered.contains("warning: broken thing"));
+        assert!(rendered.contains("note: Passing null pointer value"));
     }
 }

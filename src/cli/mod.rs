@@ -157,7 +157,7 @@ impl Builder {
                 Arg::new("between")
                     .long("between")
                     .value_name("RANGE")
-                    .help("Restrict analysis to files changed in a git diff range, e.g. main...HEAD")
+                    .help("Restrict analysis to files changed in a git diff range, e.g. main...HEAD or HEAD.. for staged changes")
                     .action(clap::ArgAction::Set),
             )
             .arg(arg!(-v --verbose ... "Verbosity, use -vv... for verbose output.").global(true))
@@ -215,9 +215,10 @@ impl Builder {
 
         let git_between = self.matches.get_one::<String>("between").cloned();
         if let Some(range) = &git_between {
-            if !range.contains("...") {
-                return Err(eyre!("Invalid parameter for option --between: {range}"))
-                    .suggestion("Please provide a revision range in the form '<BASE>...<HEAD>'");
+            if !range.contains("...") && !range.ends_with("..") {
+                return Err(eyre!("Invalid parameter for option --between: {range}")).suggestion(
+                    "Please provide '<BASE>...<HEAD>' or '<BASE>..' for staged changes",
+                );
             }
         }
 

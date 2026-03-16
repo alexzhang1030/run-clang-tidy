@@ -1,4 +1,4 @@
-use std::{fs, path, process};
+use std::{fs, io, path, process};
 
 use crate::cli::{self, utils};
 
@@ -207,14 +207,7 @@ pub fn command(data: &cli::Data) -> eyre::Result<path::PathBuf> {
 
 pub fn git_between_paths(data: &cli::Data, range: &str) -> eyre::Result<Vec<path::PathBuf>> {
     let repo_root = git_repo_root(data.json.root.as_path())?;
-    let output = process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root.as_path())
-        .arg("diff")
-        .arg("--name-only")
-        .arg("--diff-filter=ACMR")
-        .arg(range)
-        .output()
+    let output = git_diff_output(repo_root.as_path(), parse_between_spec(range)?)
         .wrap_err("Failed to execute git diff for option '--between'")?;
 
     if !output.status.success() {
@@ -271,6 +264,49 @@ fn git_repo_root(start: &path::Path) -> eyre::Result<path::PathBuf> {
     ))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum BetweenSpec<'a> {
+    Range(&'a str),
+    Staged(&'a str),
+}
+
+fn parse_between_spec(range: &str) -> eyre::Result<BetweenSpec<'_>> {
+    if range.contains("...") {
+        return Ok(BetweenSpec::Range(range));
+    }
+
+    if let Some(base) = range.strip_suffix("..") {
+        if base.is_empty() {
+            return Err(eyre!("Invalid parameter for option --between: {range}"))
+                .suggestion("Please provide a base revision before '..', e.g. 'HEAD..'");
+        }
+        return Ok(BetweenSpec::Staged(base));
+    }
+
+    Err(eyre!("Invalid parameter for option --between: {range}"))
+        .suggestion("Please provide '<BASE>...<HEAD>' or '<BASE>..' for staged changes")
+}
+
+fn git_diff_output(repo_root: &path::Path, spec: BetweenSpec<'_>) -> io::Result<process::Output> {
+    let mut cmd = process::Command::new("git");
+    cmd.arg("-C")
+        .arg(repo_root)
+        .arg("diff")
+        .arg("--name-only")
+        .arg("--diff-filter=ACMR");
+
+    match spec {
+        BetweenSpec::Range(range) => {
+            cmd.arg(range);
+        }
+        BetweenSpec::Staged(base) => {
+            cmd.arg("--cached").arg(base);
+        }
+    }
+
+    cmd.output()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -279,7 +315,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::git_repo_root;
+    use super::{git_repo_root, parse_between_spec, BetweenSpec};
 
     #[test]
     #[cfg(not(windows))]
@@ -362,5 +398,19 @@ mod tests {
         let result = git_repo_root(&temp);
         fs::remove_dir_all(&temp).unwrap();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_between_accepts_revision_range_and_staged_forms() {
+        assert_eq!(
+            parse_between_spec("main...HEAD").unwrap(),
+            BetweenSpec::Range("main...HEAD")
+        );
+        assert_eq!(
+            parse_between_spec("HEAD..").unwrap(),
+            BetweenSpec::Staged("HEAD")
+        );
+        assert!(parse_between_spec("..").is_err());
+        assert!(parse_between_spec("HEAD").is_err());
     }
 }

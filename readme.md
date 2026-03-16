@@ -313,6 +313,12 @@ To analyze only the files changed between two revisions, use `--between`:
 $ run-clang-tidy path/to/tidy.json --between main...HEAD
 ```
 
+To analyze staged changes against a base revision, use the `<BASE>..` shorthand:
+
+```bash
+$ run-clang-tidy path/to/tidy.json --between HEAD..
+```
+
 This mode still loads the JSON configuration and applies the usual `buildRoot`, `tidyFile`, `filterPre`, and `filterPost` settings. The git range is used only as an additional restriction on the final file list.
 
 Internally, the tool:

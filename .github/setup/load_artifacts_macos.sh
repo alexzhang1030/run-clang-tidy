@@ -4,8 +4,7 @@ brew install wget make python3
 
 pip3 install \
   argparse \
-  datetime \
-  compiledb
+  datetime
 
 ver="14.0.0"
 pkg="clang+llvm-$ver-x86_64-apple-darwin"
@@ -26,8 +25,8 @@ ls -la artifacts/clang
 artifacts/clang/clang-tidy --version
 
 # generate compile-commands.json
-compiledb gmake -C test-files/c-demo/project build-data
+gmake -C test-files/c-demo/project build-data
 ls -la test-files/c-demo/_bld/out
 
 # build project (clang-tidy can fail due to compiler errors)
-compiledb gmake -C test-files/c-demo/project
+gmake -C test-files/c-demo/project

@@ -5,7 +5,7 @@
 
 choco install make
 
-pip3 install argparse datetime compiledb
+pip3 install argparse datetime
 
 choco install llvm --version 14.0.0 -y
 dir "%SYSTEMDRIVE%\Program Files\LLVM\bin"
@@ -14,7 +14,7 @@ mkdir "artifacts\clang"
 copy "%SYSTEMDRIVE%\Program Files\LLVM\bin\clang-tidy.exe" "artifacts\clang"
 copy "%SYSTEMDRIVE%\Program Files\LLVM\bin\clang.exe" "artifacts\clang"
 
-compiledb make -C test-files\c-demo\project build-data
+make -C test-files\c-demo\project build-data
 dir test-files\c-demo\_bld\out
 
-compiledb make -C test-files\c-demo\project
+make -C test-files\c-demo\project

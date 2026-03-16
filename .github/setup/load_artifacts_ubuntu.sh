@@ -18,8 +18,7 @@ sudo apt-get install -y --no-install-recommends \
 
 sudo pip3 install \
   argparse \
-  datetime \
-  compiledb
+  datetime
 
 sudo apt-get remove -y \
   llvm \
@@ -52,8 +51,8 @@ ls -la artifacts/clang
 artifacts/clang/clang-tidy --version
 
 # generate compile-commands.json
-compiledb make -C test-files/c-demo/project build-data
+make -C test-files/c-demo/project build-data
 ls -la test-files/c-demo/_bld/out
 
 # build project (clang-tidy can fail due to compiler errors)
-compiledb make -C test-files/c-demo/project
+make -C test-files/c-demo/project
